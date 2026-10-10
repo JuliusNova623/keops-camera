@@ -31,7 +31,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 <div class="app">
   <div class="top"><b><span class="dot" id="dot"></span>Caméra · Alternance Keops</b><span id="who" style="font-size:.8rem;color:var(--muted)"></span></div>
   <div class="stage"><video id="v" autoplay playsinline muted></video><img class="shot" id="img" alt="Photo prise" hidden><div class="msg" id="msg"></div></div>
-  <div class="bar" id="live"><button class="btn" id="close" type="button">Fermer</button><button class="shoot" id="shoot" type="button" aria-label="Prendre la photo"></button><button class="btn" id="flip" type="button">Changer</button></div>
+  <div class="bar" id="live"><button class="btn" id="close" type="button">Fermer</button><button class="shoot" id="shoot" type="button" aria-label="Prendre la photo"></button><span style="display:flex;gap:6px;align-items:center"><select id="cams" class="btn" style="max-width:150px" hidden></select><button class="btn" id="flip" type="button">Changer</button></span></div>
   <div class="bar" id="review" hidden><button class="btn" id="again" type="button">Reprendre</button><span style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end"><button class="btn" id="copy" type="button" hidden>Copier</button><button class="btn" id="save" type="button">Enregistrer</button><button class="btn primary" id="ok" type="button">Valider</button></span></div>
 </div>
 <script>
@@ -39,19 +39,26 @@ button{font:inherit;color:inherit;cursor:pointer}
   'use strict';
   var $=function(id){return document.getElementById(id)};
   var q=new URLSearchParams(location.search), nonce=q.get('n')||'', label=q.get('l')||'';
-  var opener=window.opener||null, facing='environment', stream=null, blob=null, dataUrl=null;
+  var opener=window.opener||null, facing='environment', stream=null, blob=null, dataUrl=null, devs=[], devId=null, autoPicked=false, acked=false;
+  try{devId=localStorage.getItem('keops_cam')||null}catch(e){}
   var msg=function(t){$('msg').textContent=t||''};
   var dot=function(c){$('dot').className='dot '+(c||'')};
   if(label)$('who').textContent=label.slice(0,60);
   function send(o){if(!opener)return false;try{o.n=nonce;opener.postMessage(o,'*');return true}catch(e){return false}}
   if(send({type:'keops-cam-ready'}))dot('ok');else{dot('err');msg("Cette fenêtre n'est pas reliée à ta page Keops : après la photo, utilise « Copier » puis Ctrl+V dans la page, ou « Enregistrer » puis « Importer ».")}
   function stop(){if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}}
+  var BACK=/back|rear|arri[eè]re|environment|world|externe/i;
+  function listCams(){return navigator.mediaDevices.enumerateDevices().then(function(l){devs=l.filter(function(d){return d.kind==='videoinput'});
+    var sel=$('cams');sel.innerHTML=devs.map(function(d,i){return '<option value="'+d.deviceId+'">'+(d.label||('Caméra '+(i+1))).replace(/[<&]/g,'')+'</option>'}).join('');sel.hidden=devs.length<2;$('flip').hidden=devs.length<2;
+    var cur=stream&&stream.getVideoTracks()[0];var curId=cur&&cur.getSettings?cur.getSettings().deviceId:null;if(curId)sel.value=curId;
+    if(!autoPicked&&!devId&&devs.length>1){autoPicked=true;var back=devs.find(function(d){return BACK.test(d.label)});if(back&&back.deviceId!==curId){devId=back.deviceId;start()}}})}
   function start(){
     stop();
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){msg("Ce navigateur ne donne pas accès à la caméra.");return}
-    navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080}},audio:false})
-      .then(function(s){stream=s;$('v').srcObject=s;if(opener)msg('')})
-      .catch(function(e){msg((e&&e.name==='NotAllowedError')?"Accès à la caméra refusé : autorise la caméra pour ce site (icône à gauche de l'adresse), puis recharge.":"Caméra indisponible : "+(e&&e.message||e))});
+    var vc=devId?{deviceId:{exact:devId},width:{ideal:1920},height:{ideal:1080}}:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080}};
+    navigator.mediaDevices.getUserMedia({video:vc,audio:false})
+      .then(function(s){stream=s;$('v').srcObject=s;if(opener)msg('');listCams()})
+      .catch(function(e){if(devId&&e&&(e.name==='OverconstrainedError'||e.name==='NotFoundError'||e.name==='NotReadableError')){devId=null;try{localStorage.removeItem('keops_cam')}catch(_){}start();return}msg((e&&e.name==='NotAllowedError')?"Accès à la caméra refusé : autorise la caméra pour ce site (icône à gauche de l'adresse), puis recharge.":"Caméra indisponible : "+(e&&e.message||e))});
   }
   $('shoot').onclick=function(){
     var v=$('v');if(!v.videoWidth){msg('La caméra démarre…');return}
@@ -63,18 +70,25 @@ button{font:inherit;color:inherit;cursor:pointer}
     $('copy').hidden=!(window.ClipboardItem&&navigator.clipboard&&navigator.clipboard.write);
   };
   $('again').onclick=function(){$('img').hidden=true;$('v').hidden=false;$('live').hidden=false;$('review').hidden=true;dataUrl=null};
-  $('flip').onclick=function(){facing=facing==='environment'?'user':'environment';start()};
+  function useDev(id){devId=id;try{localStorage.setItem('keops_cam',id)}catch(e){}start()}
+  $('flip').onclick=function(){if(devs.length>1){var cur=stream&&stream.getVideoTracks()[0];var curId=cur&&cur.getSettings?cur.getSettings().deviceId:devId;var i=devs.findIndex(function(d){return d.deviceId===curId});useDev(devs[(i+1)%devs.length].deviceId)}else{facing=facing==='environment'?'user':'environment';devId=null;start()}};
+  $('cams').onchange=function(e){useDev(e.target.value)};
+  window.addEventListener('message',function(e){var d=e.data;if(d&&d.type==='keops-photo-ok'&&d.n===nonce)acked=true});
   $('close').onclick=function(){stop();window.close()};
+  function copyPng(){return new Promise(function(res,rej){var c=document.createElement('canvas'),i=$('img');c.width=i.naturalWidth;c.height=i.naturalHeight;c.getContext('2d').drawImage(i,0,0);
+    c.toBlob(function(png){if(!(window.ClipboardItem&&navigator.clipboard&&navigator.clipboard.write)){rej();return}navigator.clipboard.write([new ClipboardItem({'image/png':png})]).then(res,rej)},'image/png')})}
   $('ok').onclick=function(){
-    if(!dataUrl)return;
-    if(send({type:'keops-photo',dataUrl:dataUrl})){msg('Photo envoyée à ta page.');stop();setTimeout(function(){window.close()},350)}
-    else msg("Envoi impossible : la page Keops n'est plus reliée. Utilise « Copier » puis Ctrl+V, ou « Enregistrer » puis « Importer ».");
+    if(!dataUrl)return;acked=false;
+    var sent=send({type:'keops-photo',dataUrl:dataUrl});
+    if(sent)msg('Envoi à ta page…');
+    setTimeout(function(){
+      if(acked){msg('Photo ajoutée à ta page.');stop();setTimeout(function(){window.close()},300);return}
+      copyPng().then(function(){msg("Photo copiée ✓ — retourne dans ta page Keops (le tour de chantier est ouvert) et appuie sur Ctrl+V : elle s'ajoutera à l'objectif.");dot('ok')},
+        function(){msg("Transfert automatique impossible : utilise « Enregistrer » puis « Importer » dans ta page.")});
+    },sent?1500:0);
   };
   $('save').onclick=function(){if(!dataUrl)return;var a=document.createElement('a');a.href=dataUrl;a.download='photo_chantier_'+new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')+'.jpg';document.body.appendChild(a);a.click();a.remove()};
-  $('copy').onclick=function(){
-    var c=document.createElement('canvas'),i=$('img');c.width=i.naturalWidth;c.height=i.naturalHeight;c.getContext('2d').drawImage(i,0,0);
-    c.toBlob(function(png){navigator.clipboard.write([new ClipboardItem({'image/png':png})]).then(function(){msg('Photo copiée : colle-la dans ta page avec Ctrl+V.')},function(){msg('Copie refusée par le navigateur : utilise « Enregistrer ».')})},'image/png');
-  };
+  $('copy').onclick=function(){copyPng().then(function(){msg('Photo copiée : colle-la dans ta page avec Ctrl+V.')},function(){msg('Copie refusée par le navigateur : utilise « Enregistrer ».')})};
   window.addEventListener('beforeunload',stop);
   start();
 })();
